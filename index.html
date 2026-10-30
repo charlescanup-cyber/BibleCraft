@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BibleCraft – Biblical &amp; Theological Lesson Builder</title>
+
+<!--
+  ==========================================================================
+  BibleCraft — single-file lesson builder (HTML + Tailwind CDN + vanilla JS)
+  ==========================================================================
+  HOW IT WORKS
+  1. Fill in the Smart Prompt Hub (passage, grade band, lens, pedagogical goal).
+  2. BibleCraft builds a structured prompt behind the scenes (see buildPrompt()).
+  3. Two ways to get the lesson:
+       a) LIVE MODE  – add your Anthropic API key in Settings; the lesson streams
+          in directly (key lives only in YOUR browser's localStorage and is sent only to api.anthropic.com).
+       b) MANUAL MODE – "Copy Prompt", paste it into any AI chat, then use
+          "Paste Result" to bring the Markdown back in. No key needed.
+  4. Every lesson is auto-saved to this browser's localStorage (your local archive).
+     Use "Backup" in the sidebar to export/import the whole archive as JSON.
+  5. Export as Markdown, or Print / Save as PDF (full lesson or student pages only).
+
+  FILE MAP
+    <style>        custom styles (markdown preview + print rules)
+    <body>         sidebar (archive; drawer on mobile) | prompt hub | workspace | modals
+    <script>       1 Config  2 Storage  3 Prompt engine  4 Markdown renderer
+                   5 Generation (API)  6 UI  7 Export/Print  8 Init
+  ==========================================================================
+-->
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // Tailwind theme extension: a calm "parchment & ink" palette.
+  tailwind.config = {
+    theme: { extend: {
+      fontFamily: { sans: ['Inter','system-ui','-apple-system','Segoe UI','sans-serif'],
+                    serif: ['Georgia','Cambria','Times New Roman','serif'] },
+      colors: { ink: { 50:'#f6f7fb',100:'#eceef6',200:'#d5d9ea',300:'#aeb5d4',400:'#7d87b5',
+                       500:'#5a6596',600:'#434d7a',700:'#343c61',800:'#262c47',900:'#181c30' },
+                gold: { 50:'#fdf8eb',100:'#faefc8',200:'#f5dd91',400:'#e2b53c',500:'#c9971c',600:'#a87814' } }
+    } }
+  };
+</script>
+
+<style>
+  html, body { height: 100%; }
+  body { background: #f6f7fb; color: #1f2437; }
+  @media (max-width: 1023px) { .mob-hide { display: none !important; } }
+  .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #c5cadf; border-radius: 8px; }
+  textarea, input, select { font-size: 15px; }
+
+  /* ---------- Rendered Markdown ("lesson paper") ---------- */
+  .md { font-family: Georgia, Cambria, 'Times New Roman', serif; font-size: 16.5px; line-height: 1.65; color: #1f2437; }
+  .md h1 { font-size: 2rem; font-weight: 700; margin: 0 0 .6em; color: #181c30; line-height: 1.2; }
+  .md h2 { font-size: 1.5rem; font-weight: 700; margin: 2.2em 0 .6em; padding-bottom: .3em;
+           border-bottom: 2px solid #e2b53c; color: #262c47; scroll-margin-top: 16px; }
+  .md h3 { font-size: 1.2rem; font-weight: 700; margin: 1.6em 0 .4em; color: #343c61; }
+  .md h4 { font-size: 1.05rem; font-weight: 700; margin: 1.3em 0 .3em; color: #434d7a; }
+  .md p { margin: .7em 0; }
+  .md ul, .md ol { margin: .6em 0 .6em 1.5em; }
+  .md ul { list-style: disc; } .md ol { list-style: decimal; }
+  .md ul ul { list-style: circle; } .md li { margin: .25em 0; }
+  .md li.task { list-style: none; margin-left: -1.2em; }
+  .md blockquote { border-left: 4px solid #e2b53c; background: #fdf8eb; margin: 1em 0; padding: .6em 1em; border-radius: 0 8px 8px 0; font-style: italic; }
+  .md code { font-family: ui-monospace, Menlo, monospace; font-size: .88em; background: #eceef6; padding: .1em .35em; border-radius: 4px; }
+  .md pre { background: #181c30; color: #eceef6; padding: 1em; border-radius: 8px; overflow-x: auto; margin: 1em 0; }
+  .md pre code { background: none; color: inherit; padding: 0; }
+  .md hr { border: 0; border-top: 1px dashed #aeb5d4; margin: 2em 0; }
+  .md table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .94em; }
+  .md th, .md td { border: 1px solid #aeb5d4; padding: .55em .7em; text-align: left; vertical-align: top; min-width: 60px; }
+  .md th { background: #eceef6; font-weight: 700; }
+  .md a { color: #434d7a; text-decoration: underline; }
+  .md .cursor::after { content: '▍'; color: #c9971c; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---------- Print: only #printArea is shown ---------- */
+  #printArea { display: none; }
+  @media print {
+    @page { margin: 0.7in; }
+    body > *:not(#printArea) { display: none !important; }
+    body { background: #fff; }
+    #printArea { display: block !important; }
+    #printArea .md { font-size: 12pt; }
+    #printArea .md h2 { break-after: avoid; }
+    #printArea .md h2.pb { break-before: page; }
+    #printArea .md h3, #printArea .md h4 { break-after: avoid; }
+    #printArea .md table, #printArea .md blockquote, #printArea .md li { break-inside: avoid; }
+    #printArea .md h2.pb:first-child { break-before: auto; }
+  }
+</style>
+</head>
+
+<body class="font-sans flex flex-col lg:flex-row h-screen overflow-hidden text-ink-900">
+
+<!-- Mobile top bar (hidden on desktop): archive drawer toggle + Inputs/Lesson switch -->
+<header class="lg:hidden shrink-0 bg-ink-900 text-white flex items-center gap-3 px-3 py-2.5">
+  <button id="btnMenu" class="w-10 h-10 rounded-lg bg-ink-800 text-xl" aria-label="Open lesson archive">☰</button>
+  <div class="font-bold">✝ BibleCraft</div>
+  <div class="ml-auto flex rounded-lg bg-ink-800 p-1 text-sm font-medium">
+    <button id="mvHub" class="px-3 py-1.5 rounded-md">Inputs</button>
+    <button id="mvLesson" class="px-3 py-1.5 rounded-md">Lesson</button>
+  </div>
+</header>
+<div id="drawerBackdrop" class="hidden fixed inset-0 bg-ink-900/60 z-30 lg:hidden"></div>
+
+<!-- =====================================================================
+     SIDEBAR — local archive / history
+     ===================================================================== -->
+<aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-72 -translate-x-full transition-transform lg:static lg:translate-x-0 lg:z-auto shrink-0 bg-ink-900 text-ink-100 flex flex-col">
+  <div class="px-5 pt-5 pb-4">
+    <div class="flex items-center gap-2.5">
+      <div class="w-9 h-9 rounded-lg bg-gold-400 text-ink-900 flex items-center justify-center text-xl font-bold" aria-hidden="true">✝</div>
+      <div>
+        <div class="text-lg font-bold leading-tight text-white">BibleCraft</div>
+        <div class="text-xs text-ink-300">Biblical lesson builder</div>
+      </div>
+    </div>
+    <button id="btnNew" class="mt-4 w-full rounded-lg bg-gold-400 hover:bg-gold-500 text-ink-900 font-semibold py-2.5 transition">+ New Lesson</button>
+    <input id="search" type="search" placeholder="Search saved lessons…" class="mt-3 w-full rounded-lg bg-ink-800 border border-ink-700 placeholder-ink-400 text-ink-50 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-gold-400">
+  </div>
+
+  <div class="px-5 text-[11px] font-semibold uppercase tracking-wider text-ink-400 flex justify-between">
+    <span>Local archive</span><span id="countLabel">0</span>
+  </div>
+  <nav id="history" class="flex-1 overflow-y-auto scroll-thin px-3 py-2 space-y-1" aria-label="Saved lessons"></nav>
+
+  <div class="p-4 border-t border-ink-700 grid grid-cols-3 gap-2 text-sm">
+    <button id="btnBackup" class="rounded-md bg-ink-800 hover:bg-ink-700 py-2" title="Download the whole archive as JSON">Backup</button>
+    <button id="btnImport" class="rounded-md bg-ink-800 hover:bg-ink-700 py-2" title="Restore an archive JSON">Import</button>
+    <button id="btnSettings" class="rounded-md bg-ink-800 hover:bg-ink-700 py-2">Settings</button>
+  </div>
+  <input type="file" id="importFile" accept="application/json" class="hidden">
+</aside>
+
+<!-- =====================================================================
+     SMART PROMPT HUB — input parameters
+     ===================================================================== -->
+<section id="hub" class="flex-1 min-h-0 lg:flex-none lg:w-[430px] lg:shrink-0 bg-white border-r border-ink-200 overflow-y-auto scroll-thin">
+  <div class="p-5 lg:p-6 space-y-5">
+    <div>
+      <h1 class="text-xl font-bold text-ink-900">Smart Prompt Hub</h1>
+      <p class="text-sm text-ink-500 mt-1">Describe the lesson. BibleCraft assembles a rigorous, UDL-aligned prompt for you.</p>
+    </div>
+
+    <div>
+      <label for="passage" class="block text-sm font-semibold text-ink-800 mb-1.5">Core Scripture / Passage <span class="text-red-600">*</span></label>
+      <textarea id="passage" rows="2" placeholder='e.g. "Romans 12:1-2" or "The Parable of the Sower"' class="w-full rounded-lg border border-ink-200 px-3.5 py-3 focus:outline-none focus:ring-2 focus:ring-ink-400 resize-y"></textarea>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label for="grade" class="block text-sm font-semibold text-ink-800 mb-1.5">Target Grade Band</label>
+        <select id="grade" class="w-full rounded-lg border border-ink-200 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-ink-400">
+          <option>Lower Elementary (K–2)</option>
+          <option>Upper Elementary (3–5)</option>
+          <option selected>Middle School (6–8)</option>
+          <option>High School (9–12)</option>
+          <option>Adult / Youth Group</option>
+        </select>
+      </div>
+      <div>
+        <label for="duration" class="block text-sm font-semibold text-ink-800 mb-1.5">Lesson Length</label>
+        <select id="duration" class="w-full rounded-lg border border-ink-200 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-ink-400">
+          <option>30 minutes</option><option selected>45 minutes</option><option>60 minutes</option><option>90 minutes</option>
+        </select>
+      </div>
+    </div>
+
+    <div>
+      <label for="goal" class="block text-sm font-semibold text-ink-800 mb-1.5">Pedagogical Goal / Focus</label>
+      <select id="goal" class="w-full rounded-lg border border-ink-200 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-ink-400">
+        <option selected>Inductive Bible Study</option>
+        <option>Apologetics</option>
+        <option>Practical Lived Application</option>
+        <option>Historical/Literary Analysis</option>
+      </select>
+    </div>
+
+    <div>
+      <label for="lens" class="block text-sm font-semibold text-ink-800 mb-1.5">Doctrinal Lens <span class="font-normal text-ink-400">(optional)</span></label>
+      <input id="lens" list="lensList" type="text" placeholder="Pick a suggestion or type your own…" class="w-full rounded-lg border border-ink-200 px-3.5 py-3 focus:outline-none focus:ring-2 focus:ring-ink-400">
+      <datalist id="lensList">
+        <option value="Non-Denominational">
+        <option value="Historical-Cultural Context">
+        <option value="Character Application">
+        <option value="Reformed / Covenantal">
+        <option value="Evangelical">
+        <option value="Catholic">
+        <option value="Lutheran">
+        <option value="Wesleyan / Methodist">
+        <option value="Baptist">
+        <option value="Pentecostal / Charismatic">
+        <option value="Eastern Orthodox">
+        <option value="Christ-Centered / Redemptive-Historical">
+      </datalist>
+    </div>
+
+    <div>
+      <label for="translation" class="block text-sm font-semibold text-ink-800 mb-1.5">Bible Translation</label>
+      <select id="translation" class="w-full rounded-lg border border-ink-200 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-ink-400">
+        <option>ESV</option><option>NIV</option><option>NKJV</option><option>CSB</option><option>NLT</option><option>NASB</option>
+        <option>WEB (public domain)</option><option>KJV (public domain)</option>
+      </select>
+      <p class="text-xs text-ink-500 mt-1.5">Selling on TpT? Choose a public-domain translation to avoid copyright issues with quoted text.</p>
+    </div>
+
+    <div>
+      <label for="notes" class="block text-sm font-semibold text-ink-800 mb-1.5">Class Notes <span class="font-normal text-ink-400">(optional)</span></label>
+      <textarea id="notes" rows="4" placeholder="Learners with IEPs / 504s, English learners, prior knowledge, topics to avoid, supplies available, class size…" class="w-full rounded-lg border border-ink-200 px-3.5 py-3 focus:outline-none focus:ring-2 focus:ring-ink-400 resize-y"></textarea>
+    </div>
+
+    <fieldset class="rounded-lg border border-ink-200 p-4 space-y-2.5">
+      <legend class="px-1 text-sm font-semibold text-ink-800">Include</legend>
+      <label class="flex items-center gap-2.5 text-sm"><input id="optKey" type="checkbox" checked class="w-4 h-4 accent-ink-600"> Teacher answer key</label>
+      <label class="flex items-center gap-2.5 text-sm"><input id="optOrganizer" type="checkbox" checked class="w-4 h-4 accent-ink-600"> Graphic organizer</label>
+      <label class="flex items-center gap-2.5 text-sm"><input id="optTiers" type="checkbox" checked class="w-4 h-4 accent-ink-600"> Three reading tiers (support / on-level / extension)</label>
+    </fieldset>
+
+    <div class="space-y-2.5 pb-4">
+      <button id="btnGenerate" class="w-full rounded-lg bg-ink-700 hover:bg-ink-800 text-white font-semibold py-3.5 text-base transition">✨ Generate Lesson</button>
+      <button id="btnStop" class="hidden w-full rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold py-3.5 text-base transition">■ Stop Generating</button>
+      <div class="grid grid-cols-2 gap-2.5">
+        <button id="btnCopyPrompt" class="rounded-lg border border-ink-200 hover:bg-ink-50 py-2.5 text-sm font-medium">Copy Prompt</button>
+        <button id="btnPaste" class="rounded-lg border border-ink-200 hover:bg-ink-50 py-2.5 text-sm font-medium">Paste Result</button>
+      </div>
+      <p id="modeHint" class="text-xs text-ink-500 text-center"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =====================================================================
+     OUTPUT WORKSPACE
+     ===================================================================== -->
+<main id="workspace" class="flex-1 min-h-0 min-w-0 flex flex-col bg-ink-50">
+  <header class="bg-white border-b border-ink-200 px-4 lg:px-6 py-3 flex items-center gap-3 flex-wrap">
+    <div class="flex rounded-lg bg-ink-100 p-1 text-sm font-medium" role="tablist">
+      <button data-tab="preview" class="tab px-3.5 py-1.5 rounded-md">Preview</button>
+      <button data-tab="edit" class="tab px-3.5 py-1.5 rounded-md">Edit Markdown</button>
+      <button data-tab="prompt" class="tab px-3.5 py-1.5 rounded-md">Prompt</button>
+    </div>
+    <div id="status" class="text-sm text-ink-500 truncate"></div>
+    <div class="ml-auto flex gap-2 text-sm">
+      <button id="btnCopyMd" class="rounded-lg border border-ink-200 hover:bg-ink-50 px-3 py-2">Copy</button>
+      <button id="btnExportMd" class="rounded-lg border border-ink-200 hover:bg-ink-50 px-3 py-2">⬇ Markdown</button>
+      <button id="btnPrintStudent" class="rounded-lg border border-ink-200 hover:bg-ink-50 px-3 py-2" title="Print only the student worksheets/handouts section">🖨 Student Pages</button>
+      <button id="btnPrint" class="rounded-lg bg-gold-400 hover:bg-gold-500 text-ink-900 font-semibold px-3.5 py-2">🖨 Print / PDF</button>
+    </div>
+  </header>
+
+  <!-- Section jump chips (built from the lesson's H2 headings) -->
+  <div id="sectionNav" class="hidden bg-white border-b border-ink-100 px-4 lg:px-6 py-2 flex gap-2 overflow-x-auto scroll-thin"></div>
+
+  <div id="outScroll" class="flex-1 overflow-y-auto scroll-thin">
+    <!-- Empty state -->
+    <div id="empty" class="h-full flex items-center justify-center p-10">
+      <div class="max-w-lg text-center">
+        <div class="text-5xl mb-4">📖</div>
+        <h2 class="text-2xl font-bold text-ink-800">Ready to build a lesson</h2>
+        <p class="text-ink-500 mt-2">Enter a passage on the left and press <strong>Generate Lesson</strong>. You'll get a teacher's guide, hook, lesson body, UDL-differentiated worksheets, and formative assessment — saved automatically to your local archive.</p>
+        <p class="text-ink-400 text-sm mt-4">Tip: <kbd class="px-1.5 py-0.5 rounded bg-ink-100 border border-ink-200">Ctrl</kbd> + <kbd class="px-1.5 py-0.5 rounded bg-ink-100 border border-ink-200">Enter</kbd> generates.</p>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div id="panePreview" class="hidden p-3 lg:p-6">
+      <article id="preview" class="md max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-ink-100 px-5 py-6 lg:px-10 lg:py-9"></article>
+    </div>
+
+    <!-- Markdown editor -->
+    <div id="paneEdit" class="hidden p-3 lg:p-6 h-full">
+      <textarea id="mdEditor" spellcheck="true" class="w-full h-full min-h-[70vh] rounded-xl border border-ink-200 bg-white p-5 font-mono text-[14px] leading-relaxed focus:outline-none focus:ring-2 focus:ring-ink-400" placeholder="Lesson Markdown appears here — edit freely; changes autosave."></textarea>
+    </div>
+
+    <!-- Prompt viewer -->
+    <div id="panePrompt" class="hidden p-3 lg:p-6">
+      <div class="max-w-4xl mx-auto space-y-4">
+        <p class="text-sm text-ink-600">This is exactly what BibleCraft sends to the AI (or what you copy for manual mode). It rebuilds from the form each time you open this tab.</p>
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-ink-500 mb-1">System prompt</div>
+          <pre id="promptSystem" class="whitespace-pre-wrap bg-white border border-ink-200 rounded-xl p-4 text-[13px] leading-relaxed"></pre>
+        </div>
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-ink-500 mb-1">User prompt</div>
+          <pre id="promptUser" class="whitespace-pre-wrap bg-white border border-ink-200 rounded-xl p-4 text-[13px] leading-relaxed"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- =====================================================================
+     MODALS
+     ===================================================================== -->
+<div id="modalSettings" class="hidden fixed inset-0 bg-ink-900/60 z-50 flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-5 sm:p-7 max-h-full overflow-y-auto">
+    <h2 class="text-xl font-bold mb-1">Settings</h2>
+    <p class="text-sm text-ink-500 mb-5">Live generation calls the Anthropic API directly from your browser. Without a key, use Copy Prompt / Paste Result.</p>
+    <label class="block text-sm font-semibold mb-1.5" for="setKey">Anthropic API key</label>
+    <input id="setKey" type="password" autocomplete="off" placeholder="sk-ant-…" class="w-full rounded-lg border border-ink-200 px-3.5 py-3 mb-4 focus:outline-none focus:ring-2 focus:ring-ink-400">
+    <div class="grid grid-cols-2 gap-4 mb-3">
+      <div>
+        <label class="block text-sm font-semibold mb-1.5" for="setModel">Model ID</label>
+        <input id="setModel" type="text" class="w-full rounded-lg border border-ink-200 px-3.5 py-3 focus:outline-none focus:ring-2 focus:ring-ink-400">
+      </div>
+      <div>
+        <label class="block text-sm font-semibold mb-1.5" for="setTokens">Max output tokens</label>
+        <input id="setTokens" type="number" min="2000" max="64000" step="1000" class="w-full rounded-lg border border-ink-200 px-3.5 py-3 focus:outline-none focus:ring-2 focus:ring-ink-400">
+      </div>
+    </div>
+    <p class="text-xs text-ink-500 bg-gold-50 border border-gold-200 rounded-lg p-3 mb-5">⚠ Your key is stored only in this browser's localStorage and sent only to api.anthropic.com (never to any other server). Use a key with a spend limit, and don't enter it on a shared computer.</p>
+    <div class="flex justify-end gap-2">
+      <button data-close class="rounded-lg border border-ink-200 px-4 py-2.5 hover:bg-ink-50">Cancel</button>
+      <button id="btnSaveSettings" class="rounded-lg bg-ink-700 hover:bg-ink-800 text-white font-semibold px-5 py-2.5">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="modalPaste" class="hidden fixed inset-0 bg-ink-900/60 z-50 flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl p-7">
+    <h2 class="text-xl font-bold mb-1">Paste AI result</h2>
+    <p class="text-sm text-ink-500 mb-4">Paste the Markdown your AI returned. It will be saved to your archive using the current form settings.</p>
+    <textarea id="pasteArea" rows="16" class="w-full rounded-lg border border-ink-200 px-4 py-3 font-mono text-[13px] focus:outline-none focus:ring-2 focus:ring-ink-400" placeholder="# Lesson title&#10;## 1. Teacher's Guide &amp; Context…"></textarea>
+    <div class="flex justify-end gap-2 mt-4">
+      <button data-close class="rounded-lg border border-ink-200 px-4 py-2.5 hover:bg-ink-50">Cancel</button>
+      <button id="btnSavePaste" class="rounded-lg bg-ink-700 hover:bg-ink-800 text-white font-semibold px-5 py-2.5">Save lesson</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-ink-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg opacity-0 pointer-events-none transition-opacity z-[60]"></div>
+
+<!-- Hidden container used only for printing -->
+<div id="printArea"><div class="md" id="printMd"></div></div>
+
+<script>
+/* ==========================================================================
+   1. CONFIG & HELPERS
+   ========================================================================== */
+const LS_LESSONS  = 'biblecraft.lessons.v1';
+const LS_SETTINGS = 'biblecraft.settings.v1';
+const LS_KEY      = 'biblecraft.apikey';
+const DEFAULT_SETTINGS = { model: 'claude-sonnet-5-5', maxTokens: 16000 };
+
+const $  = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+const slug = (s) => (s || 'lesson').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60) || 'lesson';
+const fmtDate = (t) => new Date(t).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+
+let toastTimer;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.opacity = 1;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.opacity = 0, 2600);
+}
+
+function download(filename, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* ==========================================================================
+   2. STORAGE — local archive (localStorage) + settings
+   ========================================================================== */
+function loadLessons() {
+  try { return JSON.parse(localStorage.getItem(LS_LESSONS)) || []; } catch { return []; }
+}
+function saveLessons(list) {
+  try { localStorage.setItem(LS_LESSONS, JSON.stringify(list)); return true; }
+  catch (e) { toast('⚠ Could not save — browser storage is full or blocked. Use Backup.'); return false; }
+}
+function upsertLesson(lesson) {
+  const list = loadLessons();
+  const i = list.findIndex(l => l.id === lesson.id);
+  lesson.updated = Date.now();
+  if (i >= 0) list[i] = lesson; else list.unshift(lesson);
+  saveLessons(list);
+  renderHistory();
+}
+function deleteLesson(id) {
+  saveLessons(loadLessons().filter(l => l.id !== id));
+  if (state.lesson && state.lesson.id === id) newLesson();
+  renderHistory();
+}
+function getSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(LS_SETTINGS)) || {}; } catch {}
+  let apiKey = ''; try { apiKey = localStorage.getItem(LS_KEY) || ''; } catch {}
+  return { ...DEFAULT_SETTINGS, ...s, apiKey };
+}
+function putSettings({ apiKey, model, maxTokens }) {
+  try {
+    localStorage.setItem(LS_SETTINGS, JSON.stringify({ model, maxTokens }));
+    if (apiKey) localStorage.setItem(LS_KEY, apiKey); else localStorage.removeItem(LS_KEY);
+  } catch { toast('Could not store settings in this browser.'); }
+}
+
+/* ==========================================================================
+   3. PROMPT ENGINE — turns the form into a structured curriculum prompt
+   ========================================================================== */
+const GRADE_GUIDE = {
+  'Lower Elementary (K–2)': 'Learners are ages 5–8. Use concrete, story-based teaching, very short sentences (reading level ~grade 1), movement, drawing, matching, and oral response. Chunk activities into 10–12 minute blocks. Avoid abstract theological vocabulary; if a term is essential (e.g., "grace"), define it with a child-friendly picture or example.',
+  'Upper Elementary (3–5)': 'Learners are ages 8–11. Use concrete-to-abstract scaffolding, simple compare/contrast, short written responses, partner talk, and hands-on illustrations. Reading level ~grade 3–5. Introduce key terms with kid-friendly definitions.',
+  'Middle School (6–8)': 'Learners are ages 11–14. Invite questioning and identity-relevant discussion, use peer collaboration, short argument-building, and real-life scenarios. Reading level ~grade 6–8. Take their honest doubts seriously.',
+  'High School (9–12)': 'Learners are ages 14–18. Expect close reading, cross-references, original-language word studies (accessible, via lexicons), engagement with objections, and written reasoning. Reading level ~grade 9–12. Treat them as capable interpreters.',
+  'Adult / Youth Group': 'Learners are adults or a mixed-age youth/adult group. Use discussion-driven facilitation, deeper exegesis, cross-references, historical background, and life-application accountability. Respect varied levels of biblical literacy.'
+};
+const GOAL_GUIDE = {
+  'Inductive Bible Study': 'Structure the lesson around OBSERVE (what does the text say? — who/what/when/where/why, repeated words, structure, genre), INTERPRET (what did it mean to the original audience? — context, word meanings, cross-references), and APPLY (what is the timeless truth and how does it shape us today?). Questions must lead learners to discover meaning in the text rather than receive it.',
+  'Apologetics': 'Frame the passage around reasonable-faith questions it raises or answers: reliability of the text, historical evidence, coherence, common objections, and the difference between certainty and plausibility. Present strongest forms of objections fairly, give clear reasoned responses, distinguish core claims from secondary ones, and model gracious, humble conversation (1 Peter 3:15). Never use straw-man arguments.',
+  'Practical Lived Application': 'Anchor every activity in faithful application: after establishing what the text meant, move to concrete habits, decisions, relationships, and scenarios learners will face this week. Include a specific, measurable "this week" challenge and a reflection/accountability mechanism. Keep application tethered to the passage\'s actual meaning — never to proof-text.',
+  'Historical/Literary Analysis': 'Emphasize authorship, date, audience, occasion, genre conventions, literary structure (chiasm, inclusio, parallelism, narrative arc), ancient Near Eastern / Second Temple / Greco-Roman background as relevant, and canonical context. Distinguish historical-grammatical findings from later interpretive traditions.'
+};
+
+function readForm() {
+  return {
+    passage:  $('passage').value.trim(),
+    grade:    $('grade').value,
+    duration: $('duration').value,
+    goal:     $('goal').value,
+    lens:     $('lens').value.trim(),
+    translation: $('translation').value,
+    notes:    $('notes').value.trim(),
+    optKey:       $('optKey').checked,
+    optOrganizer: $('optOrganizer').checked,
+    optTiers:     $('optTiers').checked
+  };
+}
+function writeForm(p) {
+  $('passage').value = p.passage || ''; $('grade').value = p.grade; $('duration').value = p.duration;
+  $('goal').value = p.goal; $('lens').value = p.lens || ''; $('translation').value = p.translation || 'ESV';
+  $('notes').value = p.notes || '';
+  $('optKey').checked = p.optKey !== false; $('optOrganizer').checked = p.optOrganizer !== false; $('optTiers').checked = p.optTiers !== false;
+}
+
+/** Builds { system, user } prompts. The H2 headings are fixed so the UI can parse and print sections. */
+function buildPrompt(p) {
+  const lens = p.lens || 'Non-Denominational (mainstream orthodox Christianity; avoid sectarian positions)';
+  const system = [
+    'You are BibleCraft, an expert curriculum designer with graduate-level training in biblical studies and theology, and classroom experience as a teacher and instructional coach. You are deeply familiar with Universal Design for Learning (UDL 3.0), inductive Bible study methods, and age-appropriate pedagogy.',
+    '',
+    'NON-NEGOTIABLE STANDARDS',
+    '- Accuracy first. Do not invent historical facts, archaeological claims, Greek/Hebrew details, statistics, or quotations. Only name scholars/books if you are confident they exist and say what is attributed to them; otherwise describe the idea without a citation. If something is uncertain or debated, say so plainly.',
+    '- Quote Scripture only from the requested translation and only the verses needed (brief quotations). Always give book chapter:verse references. Never paraphrase and present it as a quotation.',
+    '- Handle interpretive disagreements honestly: state the main views fairly, say which view the lesson follows under the chosen doctrinal lens, and flag where faithful traditions differ. Never caricature another tradition.',
+    '- Read the passage in its literary and canonical context; do not proof-text. Distinguish what the text says, what it meant, and what it means for us.',
+    '- Be respectful, pastoral, and age-appropriate. Teach to the whole learner: intellect, heart, and practice.',
+    '- Output ONLY the finished lesson as clean GitHub-flavored Markdown. No preamble, no closing chatter, no code fences around the whole document.'
+  ].join('\n');
+
+  const user = [
+    'Create a complete, classroom-ready lesson package with these parameters:',
+    '',
+    '- Core Scripture / Passage: ' + p.passage,
+    '- Target Grade Band: ' + p.grade,
+    '- Pedagogical Goal / Focus: ' + p.goal,
+    '- Doctrinal Lens: ' + lens,
+    '- Bible Translation for quoted text: ' + p.translation,
+    '- Lesson Length: ' + p.duration,
+    p.notes ? '- Class notes from the teacher: ' + p.notes : '- Class notes: none provided',
+    '',
+    'AUDIENCE GUIDANCE: ' + GRADE_GUIDE[p.grade],
+    '',
+    'PEDAGOGICAL GUIDANCE: ' + GOAL_GUIDE[p.goal],
+    '',
+    'DOCTRINAL LENS GUIDANCE: Teach from the "' + lens + '" perspective. Name where this lens shapes the reading, and in the Teacher\'s Guide include a short "Where traditions differ" note if the passage is contested.',
+    '',
+    'REQUIRED OUTPUT STRUCTURE — use these exact H2 headings, in this order. Start with a single H1 lesson title.',
+    '',
+    '# [Creative, clear lesson title] — [Passage reference]',
+    '',
+    '## 1. Teacher\'s Guide & Context',
+    '- **At a glance** table: passage, grade band, length, goal, lens, translation, materials.',
+    '- **Main theme / Big Idea** in one memorable sentence.',
+    '- **Learning objectives**: 3–4 measurable objectives (start with verbs like identify, explain, compare, apply) tagged with a Bloom\'s level.',
+    '- **Background: historical, cultural & literary context** (author, audience, date/setting if known, genre, where the passage sits in the book and the canon, cultural details that change how we read it).',
+    '- **Key terms** with brief, accurate definitions.',
+    '- **Common misunderstandings** to anticipate and correct.',
+    '- **Where traditions differ** (only if applicable) and **Teacher prep checklist** (• 5–7 items).',
+    '- **Pacing plan** table that totals exactly ' + p.duration + '.',
+    '',
+    '## 2. Engaging Hook / Opener',
+    'An interactive object lesson, activity, or discussion starter (5–10 minutes). Include materials, step-by-step teacher script/directions, 2–3 transition questions, and how it connects to the passage\'s Big Idea. Provide a no-prep alternative.',
+    '',
+    '## 3. Main Lesson Body',
+    '- **Reading the passage** (suggested ways to read it aloud / chunk it; include the key text quoted in ' + p.translation + ' where short).',
+    '- **Scripture breakdown**: walk through the passage section by section with observations, context, and meaning.',
+    '- **Key verse analysis**: choose the central verse(s); explain wording, structure, and cross-references (list 3–5 relevant cross-references with a one-line note on each).',
+    '- **Guided questions** grouped by level (Observation → Interpretation → Application), each with a short "listen for" note for the teacher.',
+    '- **Teacher talking points** for the core explanation, matched to the audience guidance above.',
+    '- **Christ-connection / canonical thread** ONLY as appropriate to the lens and passage, handled responsibly.',
+    '',
+    '## 4. Differentiated Student Worksheets & Handouts',
+    'Design for Universal Design for Learning. These pages are student-facing: write them directly to students with clear instructions, blanks/lines indicated, and a name/date header. Begin the section with a short **UDL design map** table listing how the materials provide:',
+    '  - **Multiple Means of Representation** (e.g., text + visuals described + audio read-aloud suggestion + vocabulary supports),',
+    '  - **Multiple Means of Action & Expression** (e.g., write / draw / speak / build / act options),',
+    '  - **Multiple Means of Engagement** (e.g., choice, relevance, collaboration, self-regulation supports).',
+    p.optTiers
+      ? 'Then provide THREE reading tiers of the same core worksheet so every learner works on the same objectives: **Tier A – Supported** (simplified text about 2 grade levels below, shorter sentences, a word bank, sentence starters, picture/icon cues described in [brackets]); **Tier B – On Level**; **Tier C – Extension** (deeper analysis, cross-text connections, original-context research, or teaching/creating task).'
+      : 'Then provide one core worksheet at the target grade level, with built-in supports (word bank, sentence starters) and an optional extension box.',
+    p.optOrganizer
+      ? 'Include at least one **graphic organizer** built with Markdown tables or simple text layouts (e.g., Observe/Interpret/Apply chart, character/setting/problem map, cause-and-effect, or comparison grid).'
+      : 'Include a short vocabulary/notes handout.',
+    'Include a **Choice Board** (3×3 grid table) of demonstration options (write, draw, speak, create, act, teach) and a **Vocabulary & Key Verse** handout. Use checkbox lines (- [ ]) for student tasks where helpful. Mark each page break with a horizontal rule (---) and a bold page title.',
+    '',
+    '## 5. Formative Assessment & Discussion Prompts',
+    '- **Check for understanding** questions (5–8) across recall, interpretation, and application, with a quick exit-ticket option.',
+    '- **Discussion prompts** (4–6) that invite honest thinking, including at least one that surfaces doubts or hard questions respectfully.',
+    '- **Application tasks** (a "this week" challenge plus a reflection prompt).',
+    '- **Simple success rubric** table (Beginning / Developing / Secure / Extending) aligned to the learning objectives.',
+    '- **Differentiation & accessibility notes** for the teacher (e.g., for ELLs, students with dyslexia, attention challenges, or limited biblical background) and **closing prayer or reflection** suggestion that fits the setting.',
+    p.optKey ? '' : null,
+    p.optKey ? '## 6. Teacher Answer Key' : null,
+    p.optKey ? 'Model answers and "look-fors" for every worksheet question and assessment item, noting acceptable variation for open-ended responses.' : null,
+    '',
+    'QUALITY CHECK before you answer: every objective is taught and assessed; timings add up; Scripture references are correct; the reading level matches each tier; nothing is fabricated; tone is respectful and age-appropriate. Now produce the lesson.'
+  ].filter(l => l !== null).join('\n');
+
+  return { system, user };
+}
+
+/* ==========================================================================
+   4. MARKDOWN RENDERER — small, safe (escapes HTML), no dependencies
+   ========================================================================== */
+function inline(s) {
+  s = esc(s);
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^_\w])_([^_\s][^_]*?)_(?![_\w])/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  s = s.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+  return s;
+}
+
+function renderMarkdown(src) {
+  const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let para = [], quote = [], stack = [], h2 = 0;
+
+  const flushPara  = () => { if (para.length)  { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; } };
+  const flushQuote = () => { if (quote.length) { out.push('<blockquote>' + quote.map(q => '<p>' + inline(q) + '</p>').join('') + '</blockquote>'); quote = []; } };
+  const closeLists = (toIndent = -1) => {
+    while (stack.length && stack[stack.length-1].indent > toIndent) out.push('</li></' + stack.pop().type + '>');
+  };
+  const flushAll = () => { flushPara(); flushQuote(); closeLists(); };
+  const splitRow = (r) => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // fenced code
+    if (/^\s*```/.test(line)) {
+      flushAll(); const buf = [];
+      for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) buf.push(lines[i]);
+      out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>'); continue;
+    }
+    if (!line.trim()) { flushPara(); flushQuote(); closeLists(); continue; }
+
+    // headings
+    let m = line.match(/^(#{1,4})\s+(.*?)\s*#*$/);
+    if (m) {
+      flushAll(); const n = m[1].length;
+      if (n === 2) {
+        const pb = /worksheet|handout|answer key/i.test(m[2]) ? ' pb' : '';
+        out.push('<h2 id="sec-' + (h2++) + '" class="' + pb.trim() + '">' + inline(m[2]) + '</h2>');
+      } else out.push('<h' + n + '>' + inline(m[2]) + '</h' + n + '>');
+      continue;
+    }
+    // horizontal rule
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushAll(); out.push('<hr>'); continue; }
+    // blockquote
+    if (/^\s*>/.test(line)) { flushPara(); closeLists(); quote.push(line.replace(/^\s*>\s?/, '')); continue; }
+    // table (header row followed by a separator row)
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i+1])) {
+      flushAll();
+      const head = splitRow(line); let html = '<table><thead><tr>' + head.map(c => '<th>' + inline(c) + '</th>').join('') + '</tr></thead><tbody>';
+      for (i += 2; i < lines.length && /^\s*\|/.test(lines[i]); i++)
+        html += '<tr>' + splitRow(lines[i]).map(c => '<td>' + inline(c) + '</td>').join('') + '</tr>';
+      i--; out.push(html + '</tbody></table>'); continue;
+    }
+    // list items (nested by indentation)
+    m = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+    if (m) {
+      flushPara(); flushQuote();
+      const indent = m[1].replace(/\t/g, '    ').length, type = /\d/.test(m[2]) ? 'ol' : 'ul';
+      closeLists(indent);
+      let top = stack[stack.length-1];
+      if (top && top.indent === indent && top.type !== type) { closeLists(indent - 1); top = null; }
+      if (!top || top.indent < indent) { out.push('<' + type + '>'); stack.push({ indent, type, has: false }); top = stack[stack.length-1]; }
+      if (top.has) out.push('</li>');
+      let text = m[3], cls = '';
+      const task = text.match(/^\[( |x|X)\]\s+(.*)$/);
+      if (task) { text = (task[1] === ' ' ? '☐ ' : '☑ ') + task[2]; cls = ' class="task"'; }
+      out.push('<li' + cls + '>' + inline(text)); top.has = true; continue;
+    }
+    // indented continuation of a list item
+    if (stack.length && /^\s+\S/.test(line)) { out.push('<br>' + inline(line.trim())); continue; }
+
+    closeLists(); flushQuote(); para.push(line.trim());
+  }
+  flushAll();
+  return out.join('\n');
+}
+
+/* ==========================================================================
+   5. GENERATION — streams from the Anthropic Messages API (browser-direct)
+   ========================================================================== */
+const state = { lesson: null, tab: 'preview', abort: null, generating: false };
+
+async function generate() {
+  const p = readForm();
+  if (!p.passage) { toast('Enter a scripture passage first.'); $('passage').focus(); return; }
+  const cfg = getSettings();
+  if (!cfg.apiKey) {
+    toast('No API key set — opening Settings. (Or use Copy Prompt / Paste Result.)');
+    openSettings(); return;
+  }
+  const { system, user } = buildPrompt(p);
+
+  // Start a fresh lesson record and show it as it streams in.
+  const lesson = { id: uid(), title: p.passage, created: Date.now(), updated: Date.now(), params: p, markdown: '', model: cfg.model };
+  state.lesson = lesson; setGenerating(true); setMobileView('lesson'); showTab('preview'); setStatus('Generating…');
+  let acc = '', raf = 0;
+  const paint = () => { raf = 0; lesson.markdown = acc; renderPreview(true); $('mdEditor').value = acc; };
+
+  state.abort = new AbortController();
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: state.abort.signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': cfg.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'   // required for browser-side calls
+      },
+      body: JSON.stringify({ model: cfg.model, max_tokens: Number(cfg.maxTokens) || 16000, stream: true, system, messages: [{ role: 'user', content: user }] })
+    });
+    if (!res.ok) {
+      let msg = res.status + ' ' + res.statusText;
+      try { const j = await res.json(); msg = j.error?.message || msg; } catch {}
+      throw new Error(msg);
+    }
+    // Parse Server-Sent Events.
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const events = buf.split('\n\n'); buf = events.pop();
+      for (const ev of events) {
+        const data = ev.split('\n').find(l => l.startsWith('data:')); if (!data) continue;
+        let j; try { j = JSON.parse(data.slice(5).trim()); } catch { continue; }
+        if (j.type === 'content_block_delta' && j.delta?.type === 'text_delta') { acc += j.delta.text; if (!raf) raf = requestAnimationFrame(paint); }
+        else if (j.type === 'error') throw new Error(j.error?.message || 'Stream error');
+      }
+    }
+    finishGeneration(acc, 'Done — saved to your archive.');
+  } catch (e) {
+    if (e.name === 'AbortError') finishGeneration(acc, 'Stopped.' + (acc ? ' Partial lesson saved.' : ''));
+    else { finishGeneration(acc, ''); setStatus('Error: ' + e.message); toast('Generation failed: ' + e.message); }
+  }
+}
+
+function finishGeneration(text, statusMsg) {
+  setGenerating(false); state.abort = null;
+  const l = state.lesson; l.markdown = text;
+  l.title = extractTitle(text) || l.params.passage;
+  if (text.trim()) upsertLesson(l);
+  renderPreview(false); $('mdEditor').value = text; updateEmpty();
+  if (statusMsg) setStatus(statusMsg);
+}
+
+function extractTitle(md) { const m = /^#\s+(.+)$/m.exec(md || ''); return m ? m[1].trim() : ''; }
+
+/* ==========================================================================
+   6. UI
+   ========================================================================== */
+function setGenerating(on) {
+  state.generating = on;
+  $('btnGenerate').classList.toggle('hidden', on);
+  $('btnStop').classList.toggle('hidden', !on);
+  $('mdEditor').readOnly = on;
+}
+function setStatus(t) { $('status').textContent = t || ''; }
+
+function updateEmpty() {
+  const has = !!(state.lesson && state.lesson.markdown.trim());
+  $('empty').classList.toggle('hidden', has || state.tab !== 'preview' || state.generating);
+  ['btnCopyMd','btnExportMd','btnPrint','btnPrintStudent'].forEach(id => { $(id).disabled = !has; $(id).classList.toggle('opacity-40', !has); });
+}
+
+function renderPreview(streaming) {
+  const md = state.lesson ? state.lesson.markdown : '';
+  const el = $('preview');
+  el.innerHTML = renderMarkdown(md);
+  el.classList.toggle('cursor', !!streaming);
+  if (streaming) { const sc = $('outScroll'); if (sc.scrollHeight - sc.scrollTop - sc.clientHeight < 200) sc.scrollTop = sc.scrollHeight; }
+  buildSectionNav();
+  updateEmpty();
+}
+
+function buildSectionNav() {
+  const nav = $('sectionNav'), hs = [...$('preview').querySelectorAll('h2')];
+  nav.innerHTML = '';
+  nav.classList.toggle('hidden', !hs.length || state.tab !== 'preview');
+  hs.forEach(h => {
+    const b = document.createElement('button');
+    b.className = 'shrink-0 text-xs font-medium rounded-full bg-ink-100 hover:bg-ink-200 text-ink-700 px-3 py-1.5';
+    b.textContent = h.textContent.replace(/^\d+\.\s*/, '');
+    b.onclick = () => h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    nav.appendChild(b);
+  });
+}
+
+function showTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll('.tab').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('bg-white', on); b.classList.toggle('shadow-sm', on); b.classList.toggle('text-ink-900', on); b.classList.toggle('text-ink-500', !on);
+  });
+  const hasContent = !!(state.lesson && state.lesson.markdown.trim());
+  $('paneEdit').classList.toggle('hidden', tab !== 'edit');
+  $('panePrompt').classList.toggle('hidden', tab !== 'prompt');
+  $('panePreview').classList.toggle('hidden', !(tab === 'preview' && (hasContent || state.generating)));
+  if (tab === 'edit') $('mdEditor').value = state.lesson ? state.lesson.markdown : '';
+  if (tab === 'prompt') { const pr = buildPrompt(readForm().passage ? readForm() : { ...readForm(), passage: '[your passage]' }); $('promptSystem').textContent = pr.system; $('promptUser').textContent = pr.user; }
+  if (tab === 'preview') renderPreview(state.generating);
+  buildSectionNav(); updateEmpty();
+}
+
+function renderHistory() {
+  const q = $('search').value.trim().toLowerCase();
+  const all = loadLessons();
+  const list = all.filter(l => !q || (l.title + ' ' + l.params.passage + ' ' + l.params.grade + ' ' + l.params.goal + ' ' + (l.params.lens || '')).toLowerCase().includes(q));
+  $('countLabel').textContent = all.length;
+  const box = $('history'); box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<p class="text-sm text-ink-400 px-2 py-4">' + (all.length ? 'No matches.' : 'Your generated lessons will be saved here automatically.') + '</p>'; return; }
+  list.forEach(l => {
+    const active = state.lesson && state.lesson.id === l.id;
+    const row = document.createElement('div');
+    row.className = 'group flex items-start gap-1 rounded-lg px-3 py-2.5 cursor-pointer ' + (active ? 'bg-ink-700' : 'hover:bg-ink-800');
+    row.innerHTML = '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white truncate">' + esc(l.title) + '</div>' +
+      '<div class="text-xs text-ink-300 truncate">' + esc(l.params.grade.replace(/\s*\(.*\)/, '')) + ' · ' + esc(l.params.goal) + '</div>' +
+      '<div class="text-[11px] text-ink-400">' + fmtDate(l.updated) + '</div></div>' +
+      '<button class="opacity-0 group-hover:opacity-100 text-ink-300 hover:text-red-400 px-1" title="Delete" aria-label="Delete lesson">✕</button>';
+    row.onclick = () => openLesson(l.id);
+    row.querySelector('button').onclick = (e) => { e.stopPropagation(); if (confirm('Delete "' + l.title + '" from your archive?')) deleteLesson(l.id); };
+    box.appendChild(row);
+  });
+}
+
+function openLesson(id) {
+  if (state.generating) { toast('Wait for generation to finish (or stop it).'); return; }
+  const l = loadLessons().find(x => x.id === id); if (!l) return;
+  state.lesson = l; writeForm(l.params); $('mdEditor').value = l.markdown;
+  setStatus('Saved ' + fmtDate(l.updated) + (l.model ? ' · ' + l.model : ''));
+  showTab('preview'); renderHistory(); setDrawer(false); setMobileView('lesson');
+}
+function newLesson() {
+  if (state.generating) return;
+  state.lesson = null; $('passage').value = ''; $('mdEditor').value = ''; $('preview').innerHTML = '';
+  setStatus(''); showTab('preview'); renderHistory(); setDrawer(false); setMobileView('hub'); $('passage').focus();
+}
+
+function openSettings() {
+  const s = getSettings();
+  $('setKey').value = s.apiKey; $('setModel').value = s.model; $('setTokens').value = s.maxTokens;
+  $('modalSettings').classList.remove('hidden');
+}
+function refreshModeHint() {
+  $('modeHint').textContent = getSettings().apiKey ? 'Live mode: lessons stream in using your Anthropic key.' : 'Manual mode: no API key set — use Copy Prompt, then Paste Result.';
+}
+
+/* ==========================================================================
+   7. EXPORT & PRINT
+   ========================================================================== */
+function currentMd() { return state.lesson ? state.lesson.markdown : ''; }
+
+function exportMarkdown() {
+  const md = currentMd(); if (!md.trim()) return;
+  download(slug(state.lesson.title) + '.md', md, 'text/markdown;charset=utf-8');
+}
+async function copyText(text, okMsg) {
+  try { await navigator.clipboard.writeText(text); toast(okMsg); }
+  catch { const t = Object.assign(document.createElement('textarea'), { value: text }); document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); toast(okMsg); }
+}
+/** Print using the hidden #printArea so only lesson content (no app chrome) hits the page. */
+function printMarkdown(md) {
+  $('printMd').innerHTML = renderMarkdown(md);
+  const prevTitle = document.title; document.title = slug(state.lesson ? state.lesson.title : 'lesson');
+  window.print();
+  setTimeout(() => { document.title = prevTitle; }, 500);
+}
+/** Student pages = the title + the "Differentiated Student Worksheets" H2 section only. */
+function studentSection(md) {
+  const parts = md.split(/^(?=##\s)/m);
+  const sec = parts.find(p => /^##\s+\d*\.?\s*Differentiated Student|^##\s+.*(Worksheet|Handout)/i.test(p));
+  if (!sec) return '';
+  const title = extractTitle(md);
+  return (title ? '# ' + title + '\n\n' : '') + sec;
+}
+
+/* ==========================================================================
+   8. INIT — wire up events
+   ========================================================================== */
+$('btnGenerate').onclick = generate;
+$('btnStop').onclick = () => state.abort && state.abort.abort();
+$('btnNew').onclick = newLesson;
+$('search').oninput = renderHistory;
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+$('btnCopyPrompt').onclick = () => {
+  const p = readForm(); if (!p.passage) { toast('Enter a scripture passage first.'); return; }
+  const { system, user } = buildPrompt(p);
+  copyText(system + '\n\n---\n\n' + user, 'Prompt copied — paste it into your AI, then use Paste Result.');
+};
+$('btnPaste').onclick = () => { $('pasteArea').value = ''; $('modalPaste').classList.remove('hidden'); $('pasteArea').focus(); };
+$('btnSavePaste').onclick = () => {
+  const md = $('pasteArea').value.trim(); if (!md) { toast('Nothing to save.'); return; }
+  const p = readForm();
+  const l = { id: uid(), title: extractTitle(md) || p.passage || 'Pasted lesson', created: Date.now(), updated: Date.now(), params: p, markdown: md, model: 'manual' };
+  state.lesson = l; upsertLesson(l); $('modalPaste').classList.add('hidden');
+  $('mdEditor').value = md; setStatus('Pasted lesson saved to your archive.'); showTab('preview'); setMobileView('lesson');
+};
+
+// Editing the Markdown autosaves (debounced).
+let saveTimer;
+$('mdEditor').addEventListener('input', () => {
+  if (!state.lesson) {
+    const p = readForm();
+    state.lesson = { id: uid(), title: p.passage || 'Untitled', created: Date.now(), updated: Date.now(), params: p, markdown: '', model: 'manual' };
+  }
+  state.lesson.markdown = $('mdEditor').value;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    state.lesson.title = extractTitle(state.lesson.markdown) || state.lesson.title;
+    if (state.lesson.markdown.trim()) { upsertLesson(state.lesson); setStatus('Saved ✓'); }
+  }, 600);
+});
+
+$('btnCopyMd').onclick = () => copyText(currentMd(), 'Markdown copied.');
+$('btnExportMd').onclick = exportMarkdown;
+$('btnPrint').onclick = () => { if (currentMd().trim()) printMarkdown(currentMd()); };
+$('btnPrintStudent').onclick = () => {
+  const s = studentSection(currentMd());
+  if (!s) { toast('No student worksheet section found in this lesson.'); return; }
+  printMarkdown(s);
+};
+
+// Archive backup / restore
+$('btnBackup').onclick = () => {
+  const list = loadLessons(); if (!list.length) { toast('Archive is empty.'); return; }
+  download('biblecraft-archive-' + new Date().toISOString().slice(0,10) + '.json', JSON.stringify({ app: 'BibleCraft', version: 1, lessons: list }, null, 2), 'application/json');
+};
+$('btnImport').onclick = () => $('importFile').click();
+$('importFile').onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const data = JSON.parse(await f.text()); const incoming = Array.isArray(data) ? data : data.lessons;
+    if (!Array.isArray(incoming)) throw new Error('bad format');
+    const list = loadLessons(), ids = new Set(list.map(l => l.id)); let n = 0;
+    incoming.forEach(l => { if (l && l.id && l.markdown && l.params && !ids.has(l.id)) { list.push(l); n++; } });
+    list.sort((a, b) => b.updated - a.updated); saveLessons(list); renderHistory(); toast('Imported ' + n + ' lesson' + (n === 1 ? '' : 's') + '.');
+  } catch { toast('That file is not a valid BibleCraft archive.'); }
+  e.target.value = '';
+};
+
+// Settings
+$('btnSettings').onclick = openSettings;
+$('btnSaveSettings').onclick = () => {
+  putSettings({ apiKey: $('setKey').value.trim(), model: $('setModel').value.trim() || DEFAULT_SETTINGS.model, maxTokens: $('setTokens').value || DEFAULT_SETTINGS.maxTokens });
+  $('modalSettings').classList.add('hidden'); refreshModeHint(); toast('Settings saved.');
+};
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('.fixed').classList.add('hidden'));
+document.querySelectorAll('#modalSettings, #modalPaste').forEach(m => m.addEventListener('mousedown', e => { if (e.target === m) m.classList.add('hidden'); }));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.querySelectorAll('#modalSettings, #modalPaste').forEach(m => m.classList.add('hidden'));
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !state.generating) generate();
+});
+
+// Mobile navigation: archive drawer + Inputs/Lesson switch (desktop shows everything).
+function setMobileView(v) {
+  $('hub').classList.toggle('mob-hide', v !== 'hub');
+  $('workspace').classList.toggle('mob-hide', v !== 'lesson');
+  [['mvHub','hub'],['mvLesson','lesson']].forEach(([id, k]) => {
+    $(id).classList.toggle('bg-gold-400', v === k); $(id).classList.toggle('text-ink-900', v === k);
+  });
+}
+function setDrawer(open) {
+  $('sidebar').classList.toggle('-translate-x-full', !open);
+  $('drawerBackdrop').classList.toggle('hidden', !open);
+}
+$('btnMenu').onclick = () => setDrawer(true);
+$('drawerBackdrop').onclick = () => setDrawer(false);
+$('mvHub').onclick = () => setMobileView('hub');
+$('mvLesson').onclick = () => setMobileView('lesson');
+
+// Boot
+setMobileView('hub');
+renderHistory(); refreshModeHint(); showTab('preview'); updateEmpty();
+</script>
+</body>
+</html>
